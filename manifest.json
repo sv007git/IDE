@@ -1,0 +1,21 @@
+{
+  "name": "Antigravity IDE - Mobile & Web",
+  "short_name": "Antigravity",
+  "description": "AI-first mobile and web development environment inspired by Google Antigravity.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0b0f17",
+  "background_color": "#0b0f17",
+  "lang": "en",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
