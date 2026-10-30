@@ -1,13 +1,17 @@
-// Antigravity IDE - Mobile Interactive Terminal Emulator
+// Antigravity IDE - Native Shell & Mobile Terminal Controller
 class MobileTerminal {
   constructor() {
     this.history = [];
     this.historyIndex = -1;
     this.container = null;
     this.input = null;
+    this.isNative = false;
+    this.apiBase = '';
   }
 
-  init() {
+  init(isNative = false, apiBase = '') {
+    this.isNative = isNative;
+    this.apiBase = apiBase;
     this.container = document.getElementById('terminal-body');
     this.input = document.getElementById('terminal-input');
 
@@ -38,8 +42,15 @@ class MobileTerminal {
       });
     }
 
-    this.log('Antigravity Mobile Terminal v1.0.0 (x86_64-wasm-mobile)', 'info');
-    this.log('Type "help" for available commands.', 'info');
+    if (this.isNative) {
+      this.log('🟢 Connected to Phone Native Linux Subsystem (ARM64)', 'success');
+      this.log('Full access to Android hardware, Termux bash, packages, and Antigravity CLI.', 'info');
+      this.log('Type any Linux shell command (e.g. "uname -a", "python", "agy --version", "git status")', 'info');
+    } else {
+      this.log('🟡 Antigravity Web Sandbox (In-Browser Virtual Shell)', 'info');
+      this.log('To run on your phone\'s native CPU & bash shell, start "node server.js" in Termux.', 'info');
+      this.log('Type "help" for built-in commands.', 'info');
+    }
   }
 
   log(text, type = '') {
@@ -57,92 +68,120 @@ class MobileTerminal {
     }
   }
 
-  execute(cmdLine) {
+  async execute(cmdLine) {
     this.log(`$ ${cmdLine}`, 'cmd');
+
+    if (cmdLine === 'clear') {
+      this.clear();
+      return;
+    }
+
+    if (this.isNative) {
+      // Execute directly on the phone's native bash shell via streaming API
+      try {
+        const res = await fetch(`${this.apiBase}/api/exec`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmdLine })
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          this.log(`Error: ${errText}`, 'error');
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          buffer += chunk;
+          
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // keep last incomplete line
+          for (const line of lines) {
+            this.log(line);
+          }
+        }
+        if (buffer) this.log(buffer);
+
+        // Refresh file explorer if file command occurred
+        if (cmdLine.startsWith('touch') || cmdLine.startsWith('rm') || cmdLine.startsWith('git') || cmdLine.startsWith('mkdir')) {
+          if (window.fs && window.fs.refresh) {
+            await window.fs.refresh();
+            if (window.app) window.app.renderFileList();
+          }
+        }
+      } catch (err) {
+        this.log(`Connection Error: ${err.message}`, 'error');
+      }
+      return;
+    }
+
+    // Virtual Sandbox Fallback
     const parts = cmdLine.trim().split(/\s+/);
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1);
 
     switch (cmd) {
       case 'help':
-        this.log('Available Commands:');
+        this.log('Available Virtual Commands:');
         this.log('  run                 - Execute current active project or file');
-        this.log('  ls                  - List files in virtual workspace');
-        this.log('  cat <file>          - Display contents of a file');
-        this.log('  touch <file>        - Create a new file');
-        this.log('  rm <file>           - Remove a file');
-        this.log('  python <file>       - Run Python script via Pyodide');
+        this.log('  ls                  - List files');
+        this.log('  cat <file>          - Display file content');
+        this.log('  touch <file>        - Create a file');
+        this.log('  rm <file>           - Delete a file');
+        this.log('  python <file>       - Run Python in browser via Pyodide');
         this.log('  agent <prompt>      - Query Antigravity AI Agent');
         this.log('  export              - Export project as .zip file');
-        this.log('  clear               - Clear terminal screen');
-        this.log('  sysinfo             - Show system & storage info');
-        this.log('  about               - About Antigravity IDE');
+        this.log('  connect             - Check connection to native Android phone server');
+        this.log('  clear               - Clear terminal');
         break;
 
-      case 'clear':
-        this.clear();
+      case 'connect':
+        this.log('Checking local phone server on http://localhost:3000...', 'info');
+        if (window.app) window.app.detectBackend();
         break;
 
       case 'ls':
         const files = Object.keys(window.fs?.files || {});
-        if (files.length === 0) {
-          this.log('(no files in workspace)');
-        } else {
-          files.forEach(f => {
-            const isPy = f.endsWith('.py');
-            const isHtml = f.endsWith('.html');
-            this.log(`  ${isPy ? '🐍' : isHtml ? '🌐' : '📄'} ${f}`);
-          });
-        }
+        files.forEach(f => this.log(`  📄 ${f}`));
         break;
 
       case 'cat':
-        if (!args[0]) {
-          this.log('Usage: cat <filename>', 'error');
-        } else if (window.fs?.files[args[0]] !== undefined) {
-          this.log(window.fs.getFile(args[0]));
-        } else {
-          this.log(`File not found: ${args[0]}`, 'error');
-        }
+        if (!args[0]) this.log('Usage: cat <filename>', 'error');
+        else if (window.fs?.files[args[0]] !== undefined) this.log(window.fs.getFile(args[0]));
+        else this.log(`File not found: ${args[0]}`, 'error');
         break;
 
       case 'touch':
-        if (!args[0]) {
-          this.log('Usage: touch <filename>', 'error');
-        } else {
-          const ok = window.fs?.createFile(args[0], '');
-          if (ok) {
-            this.log(`Created ${args[0]}`, 'success');
-            if (window.app) window.app.renderFileList();
-          }
+        if (args[0] && window.fs) {
+          window.fs.createFile(args[0], '');
+          this.log(`Created ${args[0]}`, 'success');
+          if (window.app) window.app.renderFileList();
         }
         break;
 
       case 'rm':
-        if (!args[0]) {
-          this.log('Usage: rm <filename>', 'error');
-        } else {
-          const ok = window.fs?.deleteFile(args[0]);
-          if (ok) {
-            this.log(`Removed ${args[0]}`, 'success');
-            if (window.app) window.app.renderFileList();
-            if (window.editorManager) window.editorManager.loadFile(window.fs.activeFile);
-          }
+        if (args[0] && window.fs) {
+          window.fs.deleteFile(args[0]);
+          this.log(`Removed ${args[0]}`, 'success');
+          if (window.app) window.app.renderFileList();
         }
         break;
 
       case 'run':
-        if (window.runner) {
-          window.runner.runActive();
-        }
+        if (window.runner) window.runner.runActive();
         break;
 
       case 'python':
         const pyFile = args[0] || (window.fs?.activeFile.endsWith('.py') ? window.fs.activeFile : 'main.py');
-        if (window.fs?.files[pyFile] !== undefined) {
-          if (window.runner) {
-            window.runner.runPython(window.fs.getFile(pyFile), pyFile);
-          }
+        if (window.runner && window.fs?.files[pyFile] !== undefined) {
+          window.runner.runPython(window.fs.getFile(pyFile), pyFile);
         } else {
           this.log(`Python file not found: ${pyFile}`, 'error');
         }
@@ -150,40 +189,14 @@ class MobileTerminal {
 
       case 'agent':
         const query = args.join(' ');
-        if (!query) {
-          this.log('Usage: agent <your coding question or task>', 'error');
-        } else {
-          this.log(`Forwarding query to Antigravity Agent: "${query}"...`, 'info');
+        if (window.agent && query) {
           if (window.app) window.app.switchPanel('agent');
-          if (window.agent) window.agent.sendPrompt(query);
+          window.agent.sendPrompt(query);
         }
-        break;
-
-      case 'export':
-        if (window.fs) {
-          window.fs.exportZip();
-          this.log('Generated project ZIP download.', 'success');
-        }
-        break;
-
-      case 'sysinfo':
-        this.log(`Platform: ${navigator.userAgent}`);
-        this.log(`Viewport: ${window.innerWidth} x ${window.innerHeight} (dpr: ${window.devicePixelRatio})`);
-        this.log(`Active File: ${window.fs?.activeFile || 'none'}`);
-        const totalChars = Object.values(window.fs?.files || {}).reduce((acc, c) => acc + c.length, 0);
-        this.log(`Workspace Size: ${(totalChars / 1024).toFixed(2)} KB`);
-        this.log(`Google Auth: ${window.auth?.user ? 'Signed in as ' + window.auth.user.name : 'Not signed in'}`);
-        break;
-
-      case 'about':
-        this.log('Google Antigravity IDE (Web & Mobile edition)');
-        this.log('Agent-first cloud IDE built for mobile phones, tablets, and desktops.');
-        this.log('Repository: https://github.com/sv007git/IDE');
-        this.log('Powered by Gemini & Pyodide.');
         break;
 
       default:
-        this.log(`Command not found: ${cmd}. Type "help" for a list of commands.`, 'error');
+        this.log(`Command not recognized in sandbox: ${cmd}. (Run "node server.js" on your phone to unlock full native Linux bash commands).`, 'error');
     }
   }
 }

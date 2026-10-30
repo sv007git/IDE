@@ -1,4 +1,4 @@
-// Antigravity IDE - AI Agent Engine & Gemini Integration
+// Antigravity IDE - AI Agent Engine & Native Antigravity CLI Driver
 const GEMINI_KEY_STORAGE = 'antigravity_gemini_api_key';
 const GEMINI_MODEL_STORAGE = 'antigravity_gemini_model';
 
@@ -8,6 +8,15 @@ class AntigravityAgent {
     this.model = localStorage.getItem(GEMINI_MODEL_STORAGE) || 'gemini-2.5-flash';
     this.history = [];
     this.isThinking = false;
+    this.isNative = false;
+    this.apiBase = '';
+    this.hasAgy = false;
+  }
+
+  init(isNative = false, apiBase = '', hasAgy = false) {
+    this.isNative = isNative;
+    this.apiBase = apiBase;
+    this.hasAgy = hasAgy;
   }
 
   setApiKey(key) {
@@ -28,7 +37,19 @@ class AntigravityAgent {
     this.addMessage('user', userPrompt);
     this.setAgentStatus('thinking');
 
-    // Context: current active file and list of files in project
+    // If connected to native phone backend with official 'agy' installed:
+    if (this.isNative && this.hasAgy) {
+      try {
+        await this.queryNativeAgy(userPrompt);
+      } catch (err) {
+        this.addMessage('assistant', `⚠️ **Antigravity CLI Error:** ${err.message}`);
+      }
+      this.isThinking = false;
+      this.setAgentStatus('idle');
+      return;
+    }
+
+    // Otherwise fallback to Gemini API or built-in assistant
     const activeFileName = window.fs?.activeFile || 'index.html';
     const activeFileContent = window.fs?.getFile(activeFileName) || '';
     const allFiles = Object.keys(window.fs?.files || {}).join(', ');
@@ -37,13 +58,11 @@ class AntigravityAgent {
       try {
         await this.queryGeminiLive(userPrompt, activeFileName, activeFileContent, allFiles);
       } catch (err) {
-        console.error('Gemini API Error:', err);
-        this.addMessage('assistant', `⚠️ **Gemini API Error:** ${err.message}\n\nFalling back to built-in agent reasoning.`);
+        this.addMessage('assistant', `⚠️ **Gemini API Error:** ${err.message}`);
         this.queryOfflineAgent(userPrompt, activeFileName, activeFileContent);
       }
     } else {
-      // Offline smart agent
-      await new Promise(r => setTimeout(r, 600)); // simulate thinking
+      await new Promise(r => setTimeout(r, 400));
       this.queryOfflineAgent(userPrompt, activeFileName, activeFileContent);
     }
 
@@ -51,32 +70,62 @@ class AntigravityAgent {
     this.setAgentStatus('idle');
   }
 
+  // Stream output directly from native Antigravity CLI ('agy') running on phone
+  async queryNativeAgy(prompt) {
+    const res = await fetch(`${this.apiBase}/api/agent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Agent execution failed' }));
+      throw new Error(err.error || err.hint || `HTTP ${res.status}`);
+    }
+
+    const container = document.getElementById('agent-messages');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'agent-msg assistant';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.innerHTML = '<span style="color: var(--accent-cyan);">⚡ Antigravity CLI executing on phone...</span><br><pre><code></code></pre>';
+    msgDiv.appendChild(bubble);
+    container.appendChild(msgDiv);
+    container.scrollTop = container.scrollHeight;
+
+    const codeEl = bubble.querySelector('pre code');
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      codeEl.textContent += text;
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // Refresh files if the agent modified any code in workspace
+    if (window.fs && window.fs.refresh) {
+      await window.fs.refresh();
+      if (window.app) window.app.renderFileList();
+      if (window.editorManager) window.editorManager.loadFile(window.fs.activeFile);
+    }
+  }
+
   async queryGeminiLive(prompt, activeFileName, activeFileContent, allFiles) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
     
-    const systemPrompt = `You are Antigravity, an advanced AI coding assistant and pair programmer in the Antigravity Web IDE.
-You are helping the user build software on their device.
-Project files available: [${allFiles}].
-Currently open file: "${activeFileName}".
-Current content of "${activeFileName}":
+    const systemPrompt = `You are Antigravity, an AI coding pair programmer.
+Workspace files: [${allFiles}]. Active file: "${activeFileName}".
+Code:
 \`\`\`
 ${activeFileContent.slice(0, 4000)}
-\`\`\`
-
-Instructions:
-1. Provide concise, clean, working code.
-2. Format code blocks with proper language syntax (e.g. \`\`\`javascript, \`\`\`html, \`\`\`python).
-3. If providing code intended for the active file, structure it so it is easy to apply directly.`;
+\`\`\``;
 
     const body = {
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: `${systemPrompt}\n\nUser Question/Task:\n${prompt}` }
-          ]
-        }
-      ]
+      contents: [{ role: 'user', parts: [{ text: `${systemPrompt}\n\nTask: ${prompt}` }] }]
     };
 
     const res = await fetch(url, {
@@ -96,69 +145,14 @@ Instructions:
   }
 
   queryOfflineAgent(prompt, activeFileName, activeFileContent) {
-    const lower = prompt.toLowerCase();
-    let reply = '';
+    let reply = `### 🤖 Antigravity Assistant (Offline Mode)
+Received: "${prompt}".
 
-    if (lower.includes('button') || lower.includes('click') || lower.includes('counter')) {
-      reply = `### ⚡ Antigravity Agent Suggestion: Interactive Button & Counter
-Here is a responsive counter button implementation you can add to your project:
-
-\`\`\`javascript
-// Add to script.js
-const setupCounter = (btnId, displayId) => {
-  let count = 0;
-  const btn = document.getElementById(btnId);
-  const display = document.getElementById(displayId);
-  
-  if (btn && display) {
-    btn.addEventListener('click', () => {
-      count++;
-      display.textContent = \`Count: \${count}\`;
-      btn.style.transform = 'scale(0.95)';
-      setTimeout(() => btn.style.transform = 'scale(1)', 100);
-    });
-  }
-};
-\`\`\`
-
-> [!TIP]
-> To unlock live multi-file generation with real Gemini AI, add your free Google AI Studio API key in **Settings**!`;
-    } else if (lower.includes('python') || lower.includes('calculate') || lower.includes('math')) {
-      reply = `### 🐍 Python Execution in Antigravity
-You can write and run standard Python code directly on your Android phone using our in-browser Pyodide engine:
-
-\`\`\`python
-# Run this in main.py
-def fibonacci(n):
-    sequence = [0, 1]
-    while len(sequence) < n:
-        sequence.append(sequence[-1] + sequence[-2])
-    return sequence
-
-print("Fibonacci sequence:", fibonacci(10))
-\`\`\`
-
-Click **Run** or open the **Terminal** and type \`python main.py\` to execute!`;
-    } else if (lower.includes('fix') || lower.includes('error') || lower.includes('bug')) {
-      reply = `### 🔍 Antigravity Code Diagnostics
-I inspected your active file: \`${activeFileName}\`.
-- Syntax checked: OK
-- Suggested improvements:
-  1. Ensure all event listeners verify DOM element existence.
-  2. Use \`const\` and \`let\` instead of \`var\`.
-  3. Ensure mobile touch responsiveness with \`touch-action: manipulation\`.`;
-    } else {
-      reply = `### 🤖 Antigravity Pair Programmer
-I received your request: "${prompt}".
-
-**Recommended Steps:**
-1. Work directly in \`${activeFileName}\` using the Editor tab.
-2. Use the mobile syntax toolbar above the keyboard for fast typing.
-3. Tap **Preview** to verify changes live.
-
-> [!NOTE]
-> Currently running in **Offline Mode**. Add your free Google Gemini API Key in **Settings** to chat with live **Gemini 2.5 Flash** directly from your phone!`;
-    }
+**Next Actions:**
+- To run the **official Antigravity CLI (\`agy\`) natively on your phone's CPU & files**:
+  1. Open Termux on your phone.
+  2. Run: \`curl -fsSL https://raw.githubusercontent.com/sv007git/IDE/main/setup-android.sh | bash\`
+  3. Open \`http://localhost:3000\` on your phone!`;
 
     this.addMessage('assistant', reply);
   }
@@ -173,14 +167,13 @@ I received your request: "${prompt}".
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
 
-    // Parse Markdown if marked library is available
     if (typeof marked !== 'undefined') {
       bubble.innerHTML = marked.parse(text);
     } else {
       bubble.textContent = text;
     }
 
-    // Add "Apply to Editor" button for code blocks
+    // Add Apply to Editor buttons
     const codeBlocks = bubble.querySelectorAll('pre code');
     codeBlocks.forEach(codeEl => {
       const codeText = codeEl.innerText;
@@ -199,19 +192,7 @@ I received your request: "${prompt}".
         }
       };
 
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'btn btn-secondary';
-      copyBtn.style.fontSize = '0.75rem';
-      copyBtn.style.padding = '4px 8px';
-      copyBtn.innerHTML = '📋 Copy';
-      copyBtn.onclick = () => {
-        navigator.clipboard.writeText(codeText);
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => copyBtn.textContent = '📋 Copy', 1500);
-      };
-
       actionsDiv.appendChild(applyBtn);
-      actionsDiv.appendChild(copyBtn);
       codeEl.parentElement.after(actionsDiv);
     });
 
@@ -224,13 +205,12 @@ I received your request: "${prompt}".
     const badge = document.getElementById('agent-status-badge');
     if (!badge) return;
     if (status === 'thinking') {
-      badge.innerHTML = '<span class="agent-pulse" style="background:#f59e0b"></span> Reasoning...';
+      badge.innerHTML = '<span class="agent-pulse" style="background:#f59e0b"></span> Running...';
       badge.style.color = '#f59e0b';
-      badge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
     } else {
-      badge.innerHTML = '<span class="agent-pulse"></span> Antigravity Active';
+      const title = this.isNative ? 'Native Phone Engine' : 'Ready';
+      badge.innerHTML = `<span class="agent-pulse"></span> ${title}`;
       badge.style.color = '#10b981';
-      badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
     }
   }
 }

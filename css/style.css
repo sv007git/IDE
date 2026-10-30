@@ -102,6 +102,18 @@ html, body {
   font-weight: 700;
 }
 
+.brand-badge.mode-native {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.brand-badge.mode-sandbox {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
 .header-actions {
   display: flex;
   align-items: center;

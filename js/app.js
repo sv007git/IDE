@@ -2,12 +2,22 @@
 class AntigravityApp {
   constructor() {
     this.currentPanel = 'editor';
+    this.backendActive = false;
+    this.apiBase = '';
+    this.systemInfo = null;
   }
 
-  init() {
-    // Initialize components
+  async init() {
+    // 1. Detect if local Android phone backend is accessible
+    await this.detectBackend();
+
+    // 2. Initialize file system (native or virtual)
+    if (window.fs) await window.fs.init(this.backendActive ? this.apiBase : null);
+
+    // 3. Initialize components
     if (window.editorManager) window.editorManager.init();
-    if (window.terminal) window.terminal.init();
+    if (window.terminal) window.terminal.init(this.backendActive, this.apiBase);
+    if (window.agent) window.agent.init(this.backendActive, this.apiBase, this.systemInfo?.agyInstalled);
     if (window.auth) window.auth.updateUI();
 
     this.initNavigation();
@@ -17,8 +27,67 @@ class AntigravityApp {
     this.initSettingsModal();
     this.initPWA();
 
-    // Default to editor on load
     this.switchPanel('editor');
+  }
+
+  async detectBackend() {
+    // Try current origin first (if served from node server.js on localhost:3000)
+    const originsToTry = ['', 'http://localhost:3000'];
+    
+    for (const base of originsToTry) {
+      try {
+        const res = await fetch(`${base}/api/status`, { cache: 'no-cache' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success) {
+            this.backendActive = true;
+            this.apiBase = base;
+            this.systemInfo = data;
+            this.updateSystemBadge(true, data);
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+
+    this.backendActive = false;
+    this.updateSystemBadge(false);
+  }
+
+  updateSystemBadge(isNative, data = null) {
+    const badge = document.getElementById('system-mode-badge');
+    if (!badge) return;
+
+    if (isNative && data) {
+      badge.textContent = `🟢 Phone (${data.arch})`;
+      badge.className = 'brand-badge mode-native';
+      badge.title = `Hardware: ${data.cpuCount} Cores | ${data.freeMemMB}MB RAM | Antigravity: ${data.agyVersion}`;
+      badge.onclick = () => this.showSystemModal(data);
+    } else {
+      badge.textContent = `🟡 Web Sandbox`;
+      badge.className = 'brand-badge mode-sandbox';
+      badge.title = 'Click to see how to connect your phone\'s native CPU & Antigravity CLI';
+      badge.onclick = () => this.showSetupModal();
+    }
+  }
+
+  showSystemModal(data) {
+    alert(`📱 Phone Hardware & Antigravity Status:\n\n` +
+          `• Architecture: ${data.arch} (${data.platform})\n` +
+          `• CPU Cores: ${data.cpuCount} (${data.cpuModel})\n` +
+          `• Memory: ${data.freeMemMB} MB free / ${data.totalMemMB} MB total\n` +
+          `• Antigravity CLI: ${data.agyVersion}\n` +
+          `• Workspace: ${data.workspaceDir}\n\n` +
+          `Commands in Terminal execute natively on your phone!`);
+  }
+
+  showSetupModal() {
+    alert(`⚡ To use your Phone's Native CPU, Linux Shell & Antigravity CLI:\n\n` +
+          `1. Open Termux on your phone.\n` +
+          `2. Paste & Run this command:\n` +
+          `   curl -fsSL https://raw.githubusercontent.com/sv007git/IDE/main/setup-android.sh | bash\n\n` +
+          `3. Open http://localhost:3000 in Chrome.\n\n` +
+          `This unlocks native bash commands, local files, and Google Antigravity ('agy') on your phone!`);
   }
 
   initNavigation() {
@@ -34,7 +103,6 @@ class AntigravityApp {
   switchPanel(panelId) {
     this.currentPanel = panelId;
 
-    // Update bottom nav buttons
     document.querySelectorAll('.mobile-bottom-nav .nav-item').forEach(item => {
       if (item.getAttribute('data-panel') === panelId) {
         item.classList.add('active');
@@ -43,7 +111,6 @@ class AntigravityApp {
       }
     });
 
-    // Update panels
     document.querySelectorAll('.panel').forEach(panel => {
       if (panel.id === `panel-${panelId}`) {
         panel.classList.add('active');
@@ -52,7 +119,6 @@ class AntigravityApp {
       }
     });
 
-    // Panel-specific actions
     if (panelId === 'editor') {
       setTimeout(() => {
         if (window.editorManager && window.editorManager.editor) {
@@ -67,7 +133,6 @@ class AntigravityApp {
   }
 
   initHeaderActions() {
-    // Run button
     const runBtn = document.getElementById('btn-run-header');
     if (runBtn) {
       runBtn.addEventListener('click', () => {
@@ -81,7 +146,6 @@ class AntigravityApp {
       });
     }
 
-    // Agent quick button
     const agentBtn = document.getElementById('btn-agent-header');
     if (agentBtn) {
       agentBtn.addEventListener('click', () => {
@@ -89,7 +153,6 @@ class AntigravityApp {
       });
     }
 
-    // User Avatar button (opens profile/settings)
     const avatarBtn = document.getElementById('user-avatar-btn');
     if (avatarBtn) {
       avatarBtn.addEventListener('click', () => {
@@ -97,16 +160,13 @@ class AntigravityApp {
       });
     }
 
-    // Fullscreen toggle (crucial for mobile Android)
     const fsBtn = document.getElementById('btn-fullscreen');
     if (fsBtn) {
       fsBtn.addEventListener('click', () => {
         if (!document.fullscreenElement) {
           document.documentElement.requestFullscreen().catch(() => {});
-          fsBtn.innerHTML = '⛶';
         } else {
           document.exitFullscreen().catch(() => {});
-          fsBtn.innerHTML = '⛶';
         }
       });
     }
@@ -115,51 +175,25 @@ class AntigravityApp {
   initFileExplorer() {
     this.renderFileList();
 
-    // New File button
     const newFileBtn = document.getElementById('btn-new-file');
     if (newFileBtn) {
-      newFileBtn.addEventListener('click', () => {
-        const filename = prompt('Enter new filename (e.g., app.js, index.html, utils.py):');
+      newFileBtn.addEventListener('click', async () => {
+        const filename = prompt('Enter new filename (e.g. app.py, index.html, main.js):');
         if (filename && window.fs) {
-          const ok = window.fs.createFile(filename, '');
+          const ok = await window.fs.createFile(filename, '');
           if (ok) {
             this.renderFileList();
-            if (window.editorManager) {
-              window.editorManager.loadFile(filename);
-            }
+            if (window.editorManager) window.editorManager.loadFile(filename);
             this.switchPanel('editor');
           }
         }
       });
     }
 
-    // Export ZIP button
     const exportBtn = document.getElementById('btn-export-zip');
     if (exportBtn) {
       exportBtn.addEventListener('click', () => {
-        if (window.fs) window.fs.exportZip();
-      });
-    }
-
-    // Import File button
-    const importInput = document.getElementById('file-import-input');
-    if (importInput) {
-      importInput.addEventListener('change', (e) => {
-        const files = e.target.files;
-        if (!files || files.length === 0) return;
-        const file = files[0];
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const content = event.target.result;
-          if (window.fs) {
-            window.fs.saveFile(file.name, content);
-            this.renderFileList();
-            if (window.editorManager) window.editorManager.loadFile(file.name);
-            this.switchPanel('editor');
-          }
-        };
-        reader.readAsText(file);
-        importInput.value = '';
+        if (window.fs && window.fs.exportZip) window.fs.exportZip();
       });
     }
   }
@@ -192,8 +226,11 @@ class AntigravityApp {
       left.appendChild(icon);
       left.appendChild(name);
 
-      left.onclick = () => {
+      left.onclick = async () => {
         window.fs.activeFile = filename;
+        if (window.fs.isNative) {
+          await window.fs.loadNativeFileContent(filename);
+        }
         if (window.editorManager) window.editorManager.loadFile(filename);
         this.renderFileList();
         this.switchPanel('editor');
@@ -208,12 +245,11 @@ class AntigravityApp {
       renameBtn.style.width = '24px';
       renameBtn.style.height = '24px';
       renameBtn.innerHTML = '✏️';
-      renameBtn.title = 'Rename';
-      renameBtn.onclick = (e) => {
+      renameBtn.onclick = async (e) => {
         e.stopPropagation();
         const newName = prompt(`Rename ${filename} to:`, filename);
         if (newName && newName !== filename) {
-          window.fs.renameFile(filename, newName);
+          await window.fs.renameFile(filename, newName);
           this.renderFileList();
           if (window.editorManager) window.editorManager.loadFile(window.fs.activeFile);
         }
@@ -225,11 +261,10 @@ class AntigravityApp {
       deleteBtn.style.width = '24px';
       deleteBtn.style.height = '24px';
       deleteBtn.innerHTML = '🗑️';
-      deleteBtn.title = 'Delete';
-      deleteBtn.onclick = (e) => {
+      deleteBtn.onclick = async (e) => {
         e.stopPropagation();
-        if (confirm(`Are you sure you want to delete ${filename}?`)) {
-          window.fs.deleteFile(filename);
+        if (confirm(`Delete ${filename}?`)) {
+          await window.fs.deleteFile(filename);
           this.renderFileList();
           if (window.editorManager) window.editorManager.loadFile(window.fs.activeFile);
         }
@@ -263,9 +298,13 @@ class AntigravityApp {
       });
     }
 
-    // Add initial welcome message
+    // Initial greeting
     if (window.agent) {
-      window.agent.addMessage('assistant', `👋 **Hello! I am your Antigravity AI Agent.**\n\nI can help you build apps, write code, refactor functions, or solve bugs directly on your device.\n\n* **Live Gemini AI**: Enter your Gemini API key in Settings to unleash Gemini 2.5 Flash.\n* **Runner**: Tap Run to preview web apps or run Python files with Pyodide.`);
+      if (this.backendActive && this.systemInfo?.agyInstalled) {
+        window.agent.addMessage('assistant', `⚡ **Antigravity CLI Connected!**\nRunning on your phone's native **${this.systemInfo.arch}** processor.\n\nAll tasks you send here will execute through Google Antigravity's official \`agy\` CLI engine with access to your real phone files and shell.`);
+      } else {
+        window.agent.addMessage('assistant', `👋 **Antigravity IDE Ready.**\n\n- **Phone Native Mode**: Run \`bash setup-android.sh\` in Termux to connect your phone's native ARM64 CPU, local Linux shell, and Antigravity CLI (\`agy\`).\n- **Cloud / Standalone**: Add your Gemini API key in Settings to use Gemini directly.`);
+      }
     }
   }
 
@@ -273,7 +312,6 @@ class AntigravityApp {
     const modal = document.getElementById('settings-modal');
     const closeBtn = document.getElementById('btn-close-settings');
     const saveSettingsBtn = document.getElementById('btn-save-settings');
-    const resetWorkspaceBtn = document.getElementById('btn-reset-workspace');
     const demoLoginBtn = document.getElementById('btn-demo-login');
     const signOutBtn = document.getElementById('btn-sign-out');
 
@@ -284,7 +322,6 @@ class AntigravityApp {
       };
     }
 
-    // Populate current values
     const apiKeyInput = document.getElementById('setting-gemini-key');
     const modelSelect = document.getElementById('setting-gemini-model');
     const clientIdInput = document.getElementById('setting-google-client-id');
@@ -307,22 +344,10 @@ class AntigravityApp {
       };
     }
 
-    if (resetWorkspaceBtn) {
-      resetWorkspaceBtn.onclick = () => {
-        if (confirm('Reset all files to default starter project? Any unsaved edits will be replaced.')) {
-          window.fs.resetToDefaults();
-          this.renderFileList();
-          if (window.editorManager) window.editorManager.loadFile('index.html');
-          modal.classList.remove('active');
-        }
-      };
-    }
-
     if (demoLoginBtn) {
       demoLoginBtn.onclick = () => {
         const name = prompt('Enter your name for Google Developer profile:', 'Harish Vyas') || 'Google Developer';
         window.auth.loginWithDemoGoogle(name);
-        alert(`Connected as ${name}!`);
         modal.classList.remove('active');
       };
     }
@@ -337,24 +362,12 @@ class AntigravityApp {
 
   openSettingsModal() {
     const modal = document.getElementById('settings-modal');
-    if (modal) {
-      const apiKeyInput = document.getElementById('setting-gemini-key');
-      const modelSelect = document.getElementById('setting-gemini-model');
-      const clientIdInput = document.getElementById('setting-google-client-id');
-
-      if (apiKeyInput && window.agent) apiKeyInput.value = window.agent.apiKey;
-      if (modelSelect && window.agent) modelSelect.value = window.agent.model;
-      if (clientIdInput && window.auth) clientIdInput.value = window.auth.clientId;
-
-      modal.classList.add('active');
-    }
+    if (modal) modal.classList.add('active');
   }
 
   initPWA() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js').catch((err) => {
-        console.log('SW registration note:', err);
-      });
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
   }
 }
